@@ -1,0 +1,359 @@
+---
+title: "scDynamics"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r echo=FALSE, include=FALSE}
+data.dir <- file.path("data")
+```
+
+
+```{r echo=FALSE, include=FALSE}
+library(tidyverse)
+library(furrr)
+library(tictoc)
+library(ggridges)
+library(scales)
+library(viridis)
+```
+
+
+```{r echo=FALSE, include=FALSE}
+
+#file.name <- "historyOut.txt"
+
+# df.historyOut.raw <- read_delim(file.path(data.dir, file.name),  delim = "\t", 
+#                                   col_names = TRUE, col_types = cols(
+#   time = col_double(),
+#   ID = col_double(),
+#   MID = col_double(),
+#   cellType = col_double(),
+#   cellState = col_double(),
+#   BCL6 = col_double(),
+#   BLIMP1 = col_double(),
+#   IRF4 = col_double(),
+#   Event = col_character(),
+#   Affinity = col_double(),
+#   Recyclings = col_double(),
+#   nFDCcontacts = col_double(),
+#   IamAgHigh = col_double(),
+#   Zpos = col_double(),
+#   Zpol = col_double()
+# ))
+
+df.historyOut.raw <- read_delim("historyOut.txt","\t", escape_double = FALSE, trim_ws = TRUE)
+
+```
+
+
+
+```{r echo=FALSE, include=FALSE}
+# Remove posible repetitions of born and divided events, group data according to ID and arrange by time n_t_points of every cell and the change in BLIMP1 levels (first to last time point). 
+
+df.Dead.Out <-df.historyOut.raw %>% 
+  distinct(.keep_all = FALSE)%>% # Remove repeated events
+  group_by(ID) %>% 
+  arrange(time)%>%
+  mutate(
+    n_t_points = n(),
+    delta_BLIMP1 = BLIMP1[length(BLIMP1)] - BLIMP1[1]
+  )%>%
+  ungroup()
+
+  df.Dead.Out$Event <- gsub("catch_FDC", "catch FDC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("start_contact_TC", "start contact TFHC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("start_signaling_TC", "start signal TFHC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("stop_contact_TC", "stop contact TFHC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("stop_signaling_TC", "stop signal TFHC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("become_plasma", "become PC",df.Dead.Out$Event)
+  df.Dead.Out$Event <- gsub("become_memory", "become MC",df.Dead.Out$Event)
+
+
+ df.Dead.Out$cellType <- gsub("1", "CBs",df.Dead.Out$cellType)
+  df.Dead.Out$cellType <- gsub("2", "CCs",df.Dead.Out$cellType)
+  df.Dead.Out$cellType <- gsub("6", "PCs",df.Dead.Out$cellType)
+  df.Dead.Out$cellType <- gsub("7", "MCs",df.Dead.Out$cellType)
+  
+  df.Dead.Out$IamAgHigh <- gsub("1", "OC",df.Dead.Out$IamAgHigh)
+  df.Dead.Out$IamAgHigh <- gsub("0", "GC B-cell",df.Dead.Out$IamAgHigh)
+  
+  
+```
+
+
+```{r echo=FALSE, include=FALSE}
+# DATA PREPROCESSING: Grouping/Discretizing time points and BLIMP1 levels to create Ridgeline plots.
+
+df.Dead.Out <- df.Dead.Out %>%
+ mutate(
+    BLIMP1_int = round (BLIMP1, 0),  #BLIMP1 levels are now grouped 1-9
+    Time_days_3 =  round (time / 24, 0) %/%3    #time in groups of 3 days (0-2),(3-5)...
+  ) %>%
+  group_by(Time_days_3 ,cellType)%>%
+  mutate(
+    n_cells = n()
+  )%>%
+  group_by(BLIMP1_int,add = TRUE)%>%
+  mutate(
+     # Height is calculated for descrete values of BLIMP1 for a better visualization of cell rations. Note it can be rounded to 1 decimal (see difference in figure 2).
+    #height = round(n()/ max(n_cells),2)
+    height = round(n()/ max(n_cells),1)
+  )%>%
+  ungroup()
+```
+
+
+
+```{r echo=FALSE, include=FALSE}
+# DATA PREPROCESSING:  to compute the frequency of Ag captured by Centrocytes
+  df.signal.FDC <- df.Dead.Out %>%
+  filter(Event == "catch FDC") %>% 
+  group_by(ID) %>% 
+  arrange(time)%>%
+  mutate(
+    frequency_signal_FDC = length(time) # number of catch_FDC events
+  )
+
+# DATA PREPROCESSING:  to compute the duration of T-cell signal
+  df.signal.TC <- df.Dead.Out %>%
+  filter(Event == "start signal TFHC" |  Event == "stop signal TFHC" ) %>% 
+  group_by(ID) %>% 
+  arrange(time)%>%
+  mutate(
+    duration_signal_TC = time[length(time)] - time[1]
+  )
+
+```
+
+
+RESULTS: 
+
+Simulated MSM for a fixed intensity value for each of the signals. BCR  signal intennsity is set to 1 and Thelp signal intensity (cd40) is set to 50. The decision of becoming Plasma cell depend on BLIMP1  levels (if BLIMP1>8 then cells are outputed as plasma). Memory cells are those IamAgHigh cells that are BLIMP1 low. I will analyse the dynamics of three transcription factors: IRF4, BCL6, BLIMP1 for individual B-cells.
+The levels of TFs change due to upstream signals that are triguered when cells interact with Ag of neighbout T cells. Thus I first analyse the frequency and duration of these signals at population level.
+
+ 
+```{r}
+df.Dead.Out%>%
+  ggplot(aes(x = Event)) +
+  geom_density() +
+  labs(x = "B-cell events") +
+  theme_bw() + # remove white background
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position = c(0.8,0.75),
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+
+Figure 1: Density of B-cell Events during Germinal center reaction (21 days). Most of Centrocytes that "start_contact_TC" also "start_signaling_TC". Hence, they are the centrocytes with highest affinity in the T cell surroundings. Also, most of the Centrocytes that start_signaling_TC either die or become TC_selected. both included in "stop_contact_TC" event. If a Centrocyte "start_signaling_TC" only 60% of them will recycle.
+
+
+How heterogeneus is the frequency of Centrocytes catching antigen in FDC membraneat their position? 
+
+```{r}
+df.signal.FDC %>%
+  ggplot(aes(x = frequency_signal_FDC)) +
+  geom_density() +
+  scale_x_continuous( limits=c(0, 20)) +
+  labs(x = "frequency Ag internalizations by CCs") +
+  theme_bw() +
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position = c(0.8,0.75),
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+
+Figure 2: Density of frequency of Ag internalizations by Centrocytes that internalized at least one Ag during the entire germinal center reaction (21 days). Centrocytes internalizations range between 1 and 17. Most of the Centrocytes catch between 1 and 6 antigen unnits. 
+
+
+How heterogeneus is the duration of the signals between T/B cells that recycle?
+
+```{r}
+df.signal.TC %>%
+  ggplot(aes(x = duration_signal_TC)) +
+  geom_density() +
+  labs(x = "B/T-cell signal duration") +
+  theme_bw() +
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position = c(0.8,0.75),
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+
+```
+
+Figure 3: Density of B-cell signal duration during interaction between CCs and T cells for the entire germinal center reaction (21 days). Most of the of Centrocytes and Tcells interact for 0.5 hrs (61% consistent with percent of recycled CCs). 
+
+
+SINGLE CELL PLOTS
+
+
+```{r}
+#  Plot values of TFs over time for all cells with change in BLIMP1 low to high state.
+df.Dead.Out%>% 
+  filter(delta_BLIMP1 >= 2.5) %>%
+  gather(TF, TF_value, BCL6:IRF4) %>% 
+  filter(ID %in% sample(ID, 20)) %>% 
+  ggplot(aes(x =  time, TF_value, colour = TF) ) +
+  geom_point(size = 3) +
+  geom_line() +
+  facet_wrap(~ID, scales = "free_x", label = label_both) +
+  labs(y = "Transcription factor (TF) levels", x = "Time (days)", color="TF", 
+       tag = "4") +
+  expand_limits(y = 0) +
+  theme_bw() +
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position ="right",
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+
+```
+
+Figure 4: Dynamics of transcription factor (TF) levels during the life time (days) of 20 cells randomly sampled form a population of cells that change form low to high state (delta_BLIMP1 >= 6).
+  
+```{r }
+# Plot values of TFs over time for a specific cell history MID (Mother ID). Factors are cell types(all events are included).
+df.Dead.Out %>% 
+  filter( ID == "95812"|MID == "95812") %>%
+  gather(TF, TF_value, BCL6:IRF4) %>% 
+  ggplot(aes(x = time, TF_value, colour = TF, shape = as.factor(IamAgHigh)
+             )) +
+  geom_point(size = 3) +
+  geom_line() +
+  facet_wrap(~ID, scales = "free_x", label = label_both) +
+   labs(x = "Time (days)", y = "Transcription factor (TF) levels",color="TF") +
+  expand_limits(y = 0) +
+  theme_bw() +
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position ="right",
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+
+Figure 5:Transcription factor (TF) levels over life time (days) of 3 cells. The cell ID is displayed at the top of each plot. Each TF is represented by a color indicated in TF legennd. In this case cell (ID = 95812) divided asymmetrically into cells 105724 and 105725. 
+
+
+
+```{r}
+df.Dead.Out %>% 
+  filter( ID == "95812"|MID == "95812") %>%
+  filter(Event == "born" | Event == "divide" | Event == "catch FDC" |  Event == "start signal TFHC"  |Event == "stop signal TFHC"  | Event == "recycling"  | Event == "die" | Event == "Become OC") %>%
+  gather(TF, TF_value, BCL6:IRF4) %>% 
+  ggplot(aes(x = time, TF_value, colour = TF, shape = as.factor(Event))) +
+  geom_point(size = 3) +
+  scale_shape_manual(values=seq(1,7,1)) +    # Specify shapes for each Event
+  geom_line() +
+  facet_wrap(~ID, scales = "free_x", label = label_both) +
+   labs(x = "Time (hours)", y = "Transcription factor (TF) levels", color="TF", shape="Cell Event") +
+  expand_limits(y = 0) +
+  theme_bw() +
+
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position ="right",
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+Figure 6: Transcription factor (TF) levels over life time (days) of 3 cells. The cell ID is displayed at the top of each plot. The same cells as in figure 5 are shown but in this case you can see the different events in symbols.
+
+```{r }
+# Plot values of TFs over time for a specific cell history MID (Mother ID). Factors are cell types(all events are included).
+df.Dead.Out %>% 
+  filter( ID == "53515"|MID == "53515") %>%
+  gather(TF, TF_value, BCL6:IRF4) %>% 
+  ggplot(aes(x = time, TF_value, colour = TF, shape = as.factor(IamAgHigh)
+             )) +
+  geom_point(size = 3) +
+  geom_line() +
+  facet_wrap(~ID, scales = "free_x", label = label_both) +
+   labs(x = "Time (days)", y = "Transcription factor (TF) levels",color="TF") +
+  expand_limits(y = 0) +
+  theme_bw() +
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position ="right",
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+Figure 7:Transcription factor (TF) levels over life time (days) of 3 cells. The cell ID is displayed at the top of each plot. Each TF is represented by a color indicated in TF legennd. In this case cell (ID =53515) divided symmetrically (halved its concentration) into cells 60806 and 60807. 
+
+
+```{r}
+df.Dead.Out %>% 
+  filter( ID == "53515"|MID == "53515") %>%
+  filter(Event == "born" | Event == "divide" | Event == "catch FDC" |  Event == "start signal TFHC"  |Event == "stop signal TFHC"  | Event == "recycling"  | Event == "die" | Event == "become PC"| Event == "become MC") %>%
+  gather(TF, TF_value, BCL6:IRF4) %>% 
+  ggplot(aes(x = time, TF_value, colour = TF, shape = as.factor(Event))) +
+  geom_point(size = 3) +
+  scale_shape_manual(values=seq(1,7,1)) +    # Specify shapes for each Event
+  geom_line() +
+  facet_wrap(~ID, scales = "free_x", label = label_both) +
+   labs(x = "Time (hours)", y = "Transcription factor (TF) levels", color="TF", shape="Cell Event") +
+  expand_limits(y = 0) +
+  theme_bw() +
+
+  
+# Modify theme components -------------------------------------------
+theme_ridges(font_size = 13, grid =FALSE) +
+theme(axis.title.x=element_text( hjust=0.5),  
+        axis.title.y=element_text( vjust=2, # lateral centering x axes
+                                   hjust=0.5), # up/down centering x axes (respect to image)
+        axis.ticks.y= element_line(size = 0.5, colour = "black"),
+        axis.line = element_line(size = 0.5, colour = "black"),
+        legend.position ="right",
+        legend.box.background = element_rect(color="black", size=0.5)
+        )
+```
+
+Figure 8: Transcription factor (TF) levels over life time (days) of 3 cells. The cell ID is displayed at the top of each plot. The same cells as in figure 7 are shown but in this case you can see the different events in symbols. Symemtric division can also lead to Output of GC in this simulation.
